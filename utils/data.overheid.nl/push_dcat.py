@@ -1,9 +1,10 @@
 import json
 import os
 import re
-from urllib import request, parse
+from urllib import request
+from urllib.error import HTTPError
 import pprint
-# from pyld import jsonld
+
 
 from datacatalog.plugins import dcat_ap_ams
 
@@ -83,7 +84,7 @@ MAP_THEMES = {
     'theme:openbare-ruimte-groen': 'http://standaarden.overheid.nl/owms/terms/Natuur-_en_landschapsbeheer',
     'theme:sport-recreatie': 'http://standaarden.overheid.nl/owms/terms/Cultuur_en_recreatie',
     'theme:stedelijke-ontwikkeling': 'http://standaarden.overheid.nl/owms/terms/Ruimte_en_infrastructuur',
-    'theme:toerisme-cultuur': 'http://standaarden.overheid.nl/owms/terms/Toerisme"',
+    'theme:toerisme-cultuur': 'http://standaarden.overheid.nl/owms/terms/Toerisme',
     'theme:verkeer-infrastructuur': 'http://standaarden.overheid.nl/owms/terms/Verkeer_(thema)',
     'theme:verkiezingen': 'http://standaarden.overheid.nl/owms/terms/Bestuur',
     'theme:werk-inkomen': 'http://standaarden.overheid.nl/owms/terms/Werk_(thema)',
@@ -130,6 +131,9 @@ def dictionary_vary(a: dict, b: dict, exclude: dict, parent_key:str = None) -> b
                     else: # We do not have lists of lists
                         if value[i] != b[key][i]:
                             return True
+            elif key in ('modified', 'modification_date', 'issued'):
+                if value[:8] != b[key][:8]:
+                    return True
             else:
                 if value != b[key]:
                     return True
@@ -153,14 +157,14 @@ def _convert_to_ckan(dcat):
                 'url': dist['dcat:accessURL'],
                 # 'resourceType': dist['ams:resourceType'],
                 # 'distributionType': dist['ams:distributionType'],
-                'mimetype':dist['dcat:mediaType'],
-                'format': MAP_MEDIATYPE_FORMAT[dist['dcat:mediaType']],
+                'mimetype':dist.get('dcat:mediaType', None),
+                'format': MAP_MEDIATYPE_FORMAT[dist['dcat:mediaType']] if 'dcat:mediaType' in dist else None,
                 'name': dist['dc:identifier'],
                 # 'classification':'public', # We only have public datasets in dcat ?
                 'size': dist['dcat:byteSize'] if 'dcat:byteSize' in dist else None,
                 'modification_date': dist['dct:modified'] if 'dct:modified' in dist else dist['foaf:isPrimaryTopicOf'][
                     'dct:modified'],
-                'language': language,  # Inherit from dataset
+                'language': [language],  # Inherit from dataset
                 'metadata_language': language,  # Inherit from dataset
                 # 'metadata_created': dist['foaf:isPrimaryTopicOf']['dct:issued'],
                 # 'metadata_modified': dist['foaf:isPrimaryTopicOf']['dct:modified'],
@@ -177,7 +181,7 @@ def _convert_to_ckan(dcat):
         'frequency': MAP_FREQUENCY.get(dcat['dct:accrualPeriodicity'],
                                        'http://publications.europa.eu/resource/authority/frequency/UNKNOWN'),
         # 'temporalUnit': "na",
-        'language': language,
+        'language': [language],
         'contact_point_name': dcat['dcat:contactPoint']['vcard:fn'],
         'contact_point_email': dcat['dcat:contactPoint']['vcard:hasEmail'],
         # ? How to map publishers  to fixed list of organisations : https://waardelijsten.dcat-ap-donl.nl/donl_organization.json
@@ -236,12 +240,7 @@ def push_dcat():
     remove_resources = {}
 
     for ds_new in datasets_new:
-        id = ds_new['dct:identifier']
-        # req = _request_with_headers(id)
-        # with request.urlopen(req) as response:
-        #     assert 200 == response.getcode()
-        #     ds_new = json.load(response)
-        # ds_new = jsonld.compact(ds_new, context)
+        identifier = ds_new['dct:identifier']
 
         owner = ds_new['ams:owner']
         # Only import datasets where amsterdam is owner
@@ -251,18 +250,17 @@ def push_dcat():
         if not api_key:
             continue
 
-        count += 1
-        if count > 1:
-            break
+        # if count > 10:
+        #    break
 
         ds_new = _convert_to_ckan(ds_new)
 
         # check if dataset exists
-        ds_old = datasets_old[identifier_index_map_old[id]] if id in identifier_index_map_old else None
+        ds_old = datasets_old[identifier_index_map_old[identifier]] if identifier in identifier_index_map_old else None
         if ds_old:
             # Dataset already exists. Use package_update
             # First add ID's to ckan dataset
-            ds_new['id'] = ds_old['id']
+            id = ds_new['id'] = ds_old['id']
 
             name_id_map_old = { res_old['name']: res_old['id'] for res_old in ds_old['resources']}
             for res_new in ds_new['resources']:
@@ -271,69 +269,91 @@ def push_dcat():
                 # else A new id will be assigned
 
             name_set_new = { res_new['name'] for res_new in ds_new['resources']}
-            # How to remove resources that have been removed ?
-            to_remove = []
-            for i in reversed(range(len(ds_old['resources']))):
-                if ds_old['resources'][i]['name'] not in name_set_new:
-                    to_remove.append(i)
-
-            # Remove resource later
-            remove_resources[ds_new['id']] = to_remove
 
             # Check if old and new datasets are different
             exclude = {
                 None: {
-                    'revision_id',
-                    'private',
-                    'changetype',
-                    'isopen',
-                    'maintainer',
-                    'maintainer_email',
-                    'referentie_data',
-                    'num_tags',
-                    'high_value',
-                    'metadata_created',
-                    'metadata_modified',
                     'author',
                     'author_email',
+                    'basis_register',
+                    'changetype',
+                    'creator_user_id',
+                    'groups',
+                    'high_value',
+                    'isopen',
+                    'license_title',
+                    'license_url',
+                    'maintainer',
+                    'maintainer_email',
+                    'metadata_created',
+                    'metadata_modified',
+                    'national_coverage',
+                    'num_resources',
+                    'num_tags',
+                    'organization',
+                    'owner_org',
+                    'private',
+                    'referentie_data',
+                    'revision_id',
                     'state',
                     'type',
-                    'organization'
                 },
                 'resources': {
-                    'url_type',
                     'cache_last_updated',
-                    'package_id',
-                    'datastore_active',
-                    'metadata_created'
-                    'state',
-                    'mimetype_inner',
                     'cache_url',
                     'created',
-                    'metadata_modified',
-                    'webstore_url',
+                    'datastore_active',
                     'last_modified',
+                    'metadata_created'
+                    'metadata_modified',
+                    'mimetype_inner',
+                    'package_id',
                     'position',
-                    'revision_id',
                     'resource_type',
-                    'webstore_last_updated'
+                    'revision_id',
+                    'size',
+                    'state',
+                    'url_type',
+                    'webstore_last_updated',
+                    'webstore_url',
                 },
                 'tags': {
-                    'vocabulary_id',
                     'display_name',
                     'id',
+                    'vocabulary_id',
+                    'state',
                 }
             }
 
             if not dictionary_vary(ds_new, ds_old, exclude):
                 continue
 
+            # Collect resources te be removed
+            to_remove = []
+            for i in reversed(range(len(ds_old['resources']))):
+                if ds_old['resources'][i]['name'] not in name_set_new:
+                    to_remove.append(ds_old['resources'][i]['id'])
+
+            # Remove resource later
+            remove_resources[id] = to_remove
+
             ds_new_string = json.dumps(ds_new)
             ds_new_string = ds_new_string.encode('utf-8')
             req.add_header('Content-Length', len(ds_new_string))
 
             req = _request_with_headers(f'{donl_root}/api/3/action/package_update?id={id}', data=ds_new_string, authorization=api_key, method='POST')
-            response = request.urlopen(req)
+            try:
+                response = request.urlopen(req)
+            except HTTPError as err:
+                if err.code == 409:
+                    error_message = err.read()
+                    print(error_message)
+                    print("Problem with dataset : ")
+                    pprint.pprint(ds_new)
+                    continue
+                else:
+                    raise err
+
             assert response.code == 200
             response_dict2 = json.loads(response.read())
             if response_dict2['success']:
@@ -341,7 +361,8 @@ def push_dcat():
 
             updated_package = response_dict2['result']
 
-            pprint.pprint(updated_package)
+            count += 1
+            # pprint.pprint(updated_package)
         else:
             # Dataset does not exist . Use package_create
             ds_new_string = json.dumps(ds_new)
@@ -349,25 +370,49 @@ def push_dcat():
             req.add_header('Content-Length', len(ds_new_string))
 
             req = _request_with_headers(f'{donl_root}/api/3/action/package_create', data=ds_new_string, authorization=api_key, method='POST')
-            response = request.urlopen(req)
+            try:
+                response = request.urlopen(req)
+            except HTTPError as err:
+                if err.code == 409 or err.code == 400:
+                    error_message = err.read()
+                    print(error_message)
+                    print("Problem with dataset : ")
+                    pprint.pprint(ds_new)
+                    continue
+                else:
+                    raise err
+
             assert response.code == 200
             response_dict3 = json.loads(response.read())
             if response_dict3['success']:
                 insert_count += 1
             created_package = response_dict3['result']
-            pprint.pprint(created_package)
 
-        # Delete datasets in datasets_old not in datasets_new
-        for ds_old in datasets_old:
-            if ds_old['identifier'] not in identifier_index_map_new:
-                req = _request_with_headers(f'{donl_root}/api/3/action/package_delete?id={id}')
-                response = request.urlopen(req)
-                assert response.code == 200
-                response_dict4 = json.loads(response.read())
-                if response_dict4['success']:
-                    delete_count += 1
+            count += 1
+            # pprint.pprint(created_package)
 
-        print(f"Datasets inserted:, {insert_count}, Datasets updated: {update_count}, Datasets deleted: {delete_count}")
+    # Delete datasets in datasets_old not in datasets_new
+    for ds_old in datasets_old:
+        if ds_old['identifier'] not in identifier_index_map_new:
+            req = _request_with_headers(f'{donl_root}/api/3/action/package_delete?id={ds_old[id]}')
+            response = request.urlopen(req)
+            assert response.code == 200
+            response_dict4 = json.loads(response.read())
+            if response_dict4['success']:
+                delete_count += 1
+
+    # Delete resources
+    delete_res_count = 0
+    for ds_id, res_list in remove_resources:
+        for res_id in res_list:
+            req = _request_with_headers(f'{donl_root}/api/3/action/resource_delete?id={res_id}')
+            response = request.urlopen(req)
+            assert response.code == 200
+            response_dict5 = json.loads(response.read())
+            if response_dict5['success']:
+                delete_res_count += 1
+
+    print(f"Datasets inserted:, {insert_count}, Datasets updated: {update_count}, Datasets deleted: {delete_count}, Resources deleted: {delete_res_count}")
 
 
 if __name__ == '__main__':
