@@ -1,12 +1,11 @@
 import json
 import os
 import re
+import urllib
 from urllib import request
 from urllib.error import HTTPError
 import pprint
 
-
-from datacatalog.plugins import dcat_ap_ams
 
 filetype_prefix = 'http://publications.europa.eu/resource/authority/file-type/'
 
@@ -157,8 +156,8 @@ def _convert_to_ckan(dcat):
                 'url': dist['dcat:accessURL'],
                 # 'resourceType': dist['ams:resourceType'],
                 # 'distributionType': dist['ams:distributionType'],
-                'mimetype':dist.get('dcat:mediaType', None),
-                'format': MAP_MEDIATYPE_FORMAT[dist['dcat:mediaType']] if 'dcat:mediaType' in dist else None,
+                'mimetype':dist.get('dcat:mediaType', 'application/octet-stream'),  # ? default application/octet-stream if no dcat:mediaType
+                'format': MAP_MEDIATYPE_FORMAT[dist.get('dcat:mediaType','application/octet-stream')],
                 'name': dist['dc:identifier'],
                 # 'classification':'public', # We only have public datasets in dcat ?
                 'size': dist['dcat:byteSize'] if 'dcat:byteSize' in dist else None,
@@ -206,17 +205,12 @@ def push_dcat():
     dcat_root = 'https://api.data.amsterdam.nl/dcatd' if dcat_env == 'prod' else 'https://acc.api.data.amsterdam.nl/dcatd'
     donl_root = 'https://data.overheid.nl/data' if dcat_env == 'prod' else 'http://beta-acc.data.overheid.nl/data'
 
-    # context = dcat_ap_ams.mds_context()
-
     req = _request_with_headers(f'{dcat_root}/harvest')
 
     with request.urlopen(req) as response:
         assert 200 == response.getcode()
         datasets_new = json.load(response)
         datasets_new = datasets_new['dcat:dataset']
-
-    # datasets_new = jsonld.compact(datasets_new, context)
-    # print(json.dumps(datasets_new, indent=2))
 
     # Get all old datasets for gemeente amsterdam
     req = _request_with_headers(f'{donl_root}/api/3/action/package_search?q=organization:gemeente-amsterdam')
@@ -337,7 +331,7 @@ def push_dcat():
             # Remove resource later
             remove_resources[id] = to_remove
 
-            ds_new_string = json.dumps(ds_new)
+            ds_new_string = urllib.parse.quote(json.dumps(ds_new))
             ds_new_string = ds_new_string.encode('utf-8')
             req.add_header('Content-Length', len(ds_new_string))
 
@@ -365,7 +359,7 @@ def push_dcat():
             # pprint.pprint(updated_package)
         else:
             # Dataset does not exist . Use package_create
-            ds_new_string = json.dumps(ds_new)
+            ds_new_string = urllib.parse.quote(json.dumps(ds_new))
             ds_new_string = ds_new_string.encode('utf-8')
             req.add_header('Content-Length', len(ds_new_string))
 
